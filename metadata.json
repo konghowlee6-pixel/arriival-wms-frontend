@@ -1,0 +1,5 @@
+{
+  "name": "Warehouse Inventory Management2",
+  "description": "A system to manage item details, stock check-in/check-out records for two warehouses (Sabah and Sarawak), and upload delivery order documents.",
+  "requestFramePermissions": []
+}
