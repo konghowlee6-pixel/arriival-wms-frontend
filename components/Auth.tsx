@@ -17,7 +17,7 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
   const [forgotMessage, setForgotMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://wms.arriival.com';
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://wms.arrival.com';
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
