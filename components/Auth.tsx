@@ -1,9 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import type { User, Organization, Warehouse } from '../types';
-import { initialItems, initialStockInRecords, initialStockOutRecords, initialDeliveryOrders, defaultPricing } from '../data';
-import { initializeDefaultRoles } from '../App';
-import { getPasswordResetEmailHtml } from '../utils/emailTemplates';
-
+import React, { useState } from 'react';
+import type { User, Organization } from '../types';
 
 interface AuthProps {
   onAuthSuccess: (session: { user: User; org: Organization | null }) => void;
@@ -19,181 +15,165 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
   const [isForgotModalOpen, setIsForgotModalOpen] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
   const [forgotMessage, setForgotMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://wms.arriival.com';
 
-  const getUsers = (): User[] => JSON.parse(localStorage.getItem('inventory-app-users') || '[]');
-  const getOrgs = (): Organization[] => JSON.parse(localStorage.getItem('inventory-app-orgs') || '[]');
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    console.log("LOGIN_CLICKED");
+    setError('');
+    setIsLoading(true);
 
-  // One-time setup for the System Super Admin to ensure it's always available and correct.
-  useEffect(() => {
-    const users = getUsers();
-    const adminEmail = 'admin@arriival.com';
-    const adminIndex = users.findIndex(u => u.email.toLowerCase() === adminEmail.toLowerCase());
-    
-    const correctAdminUser: User = {
-        id: 'user-system-admin',
-        email: adminEmail,
-        password: 'admin123',
-        organizationId: null,
-        roleId: 'system-super-admin-role',
-        role: 'System Super Admin',
-        status: 'active'
+    const payload = {
+      email: email.trim(),
+      password: password
     };
-    
-    let updatedUsers;
 
-    if (adminIndex > -1) {
-      const existingAdmin = users[adminIndex];
-      // Preserve existing ID if different from default
-      correctAdminUser.id = existingAdmin.id;
-      // Deep compare to see if an update is needed
-      if (JSON.stringify(existingAdmin) !== JSON.stringify(correctAdminUser)) {
-        updatedUsers = [...users];
-        updatedUsers[adminIndex] = correctAdminUser;
+    console.log("CALLING_API", payload);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json();
+      console.log("API_RESPONSE", data);
+
+      if (!response.ok) {
+        setError(data.error || 'Login failed. Please check your credentials.');
+        setIsLoading(false);
+        return;
       }
-    } else {
-      // Admin doesn't exist, add it
-      updatedUsers = [...users, correctAdminUser];
-    }
-    
-    if (updatedUsers) {
-        localStorage.setItem('inventory-app-users', JSON.stringify(updatedUsers));
-        console.log("System Super Admin account has been set up/reset. Email: admin@arriival.com, Pass: admin123");
-    }
-  }, []);
-  
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    const users = getUsers();
-    const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
-    if (!user || user.password !== password) {
-      setError('Invalid email or password.');
-      return;
-    }
-    
-    if (user.status === 'pending') {
-      setError('This account has not been activated. Please use the invitation link sent to your email.');
-      return;
-    }
 
-    if (user.role === 'System Super Admin') {
-        onAuthSuccess({ user, org: null });
-        return;
-    }
+      // Store the JWT token in localStorage
+      if (data.token) {
+        localStorage.setItem('auth-token', data.token);
+      }
 
-    const orgs = getOrgs();
-    const org = orgs.find(o => o.id === user.organizationId);
-    if (!org) {
-      setError('Could not find the organization associated with this user. Please contact support.');
-      return;
-    }
-    onAuthSuccess({ user, org });
-  };
+      // Transform backend response to match frontend User type
+      const user: User = {
+        id: data.user.id,
+        email: data.user.email,
+        password: '', // Don't store password in frontend
+        organizationId: data.user.organization_id,
+        roleId: data.user.role_id || 'system-super-admin-role',
+        role: data.user.role || 'System Super Admin',
+        status: 'active'
+      };
 
-  const handleSignUp = (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    if (!email.includes('@') || password.length < 6 || !orgName.trim()) {
-      setError('Please provide a valid email, a password of at least 6 characters, and an organization name.');
-      return;
-    }
-
-    const users = getUsers();
-    const orgs = getOrgs();
-
-    const existingUser = users.find(u => u.email.toLowerCase() === email.toLowerCase());
-    const existingOrg = orgs.find(o => o.name.toLowerCase() === orgName.trim().toLowerCase());
-
-    if (existingOrg) {
-      setError(`An organization named "${orgName}" already exists. If you have been invited, please use the invitation link sent to your email to set up your account.`);
-      return;
-    }
-
-    if (existingUser) {
-        setError('An account with this email already exists. Please sign in or use the "Forgot Password" link.');
-        return;
-    }
-    
-    // New Organization Signup
-    const newOrg: Organization = { 
-        id: `org-${Date.now()}`, 
-        name: orgName.trim(),
-        pricing: defaultPricing,
+      // For System Super Admin, org is null
+      const org: Organization | null = data.user.organization_id ? {
+        id: data.user.organization_id,
+        name: data.user.organization_name || 'Organization',
+        pricing: { storageFeePerCBM: 0, handlingFeePerCarton: 0 },
         dateJoined: new Date().toISOString().split('T')[0],
         billingAddress: '',
         contactPerson: '',
         contactEmail: '',
         contactPhone: '',
         companyRegNo: '',
-    };
-    
-    const getStorageKey = (key: string) => `inventory-app-${newOrg.id}-${key}`;
-    
-    const newWarehouses: Warehouse[] = [
-        { id: `wh-${newOrg.id}-sabah`, name: 'Sabah', address: 'Default Sabah Address' },
-        { id: `wh-${newOrg.id}-sarawak`, name: 'Sarawak', address: 'Default Sarawak Address' },
-    ];
-    localStorage.setItem(getStorageKey('warehouses'), JSON.stringify(newWarehouses));
-    
-    const { roles: defaultRoles, adminRoleId } = initializeDefaultRoles(newOrg.id, newWarehouses.map(w => w.id));
+      } : null;
 
-    const newUser: User = { 
-        id: `user-${Date.now()}`, 
-        email, 
-        password, 
-        organizationId: newOrg.id,
-        roleId: adminRoleId,
-        status: 'active',
-    };
+      setIsLoading(false);
+      onAuthSuccess({ user, org });
 
-    localStorage.setItem('inventory-app-users', JSON.stringify([...users, newUser]));
-    localStorage.setItem('inventory-app-orgs', JSON.stringify([...orgs, newOrg]));
-
-    localStorage.setItem(getStorageKey('items'), JSON.stringify(initialItems));
-    localStorage.setItem(getStorageKey('stockIn'), JSON.stringify(initialStockInRecords));
-    localStorage.setItem(getStorageKey('stockOut'), JSON.stringify(initialStockOutRecords));
-    localStorage.setItem(getStorageKey('deliveryOrders'), JSON.stringify(initialDeliveryOrders));
-    localStorage.setItem(getStorageKey('auditTrail'), JSON.stringify([]));
-    localStorage.setItem(getStorageKey('consignees'), JSON.stringify([]));
-    localStorage.setItem(getStorageKey('roles'), JSON.stringify(defaultRoles));
-
-    onAuthSuccess({ user: newUser, org: newOrg });
+    } catch (err) {
+      console.error("API_ERROR", err);
+      setError('Unable to connect to the server. Please try again later.');
+      setIsLoading(false);
+    }
   };
 
-
-  const handleForgotPassword = (e: React.FormEvent) => {
+  const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
-    const allUsers = getUsers();
-    const userIndex = allUsers.findIndex(u => u.email.toLowerCase() === forgotEmail.toLowerCase());
+    setError('');
+    setIsLoading(true);
 
-    if (userIndex !== -1) {
-        const token = `reset-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
-        const expires = Date.now() + 3600000; // 1 hour from now
-
-        allUsers[userIndex].passwordResetToken = token;
-        allUsers[userIndex].passwordResetExpires = expires;
-
-        localStorage.setItem('inventory-app-users', JSON.stringify(allUsers));
-
-        const resetLink = `${window.location.origin}?reset-token=${token}`;
-        
-        console.group("--- DEMO: PASSWORD RESET ---");
-        console.log(`A password reset link has been generated for ${forgotEmail}.`);
-        console.log(`For this demo, click the link below to reset the password:`);
-        console.log(resetLink);
-        console.log("Email content for reference:");
-        console.log(getPasswordResetEmailHtml(resetLink));
-        console.groupEnd();
+    if (!email.includes('@') || password.length < 6 || !orgName.trim()) {
+      setError('Please provide a valid email, a password of at least 6 characters, and an organization name.');
+      setIsLoading(false);
+      return;
     }
-    setForgotMessage('If an account with this email exists, a password reset link has been logged to the developer console.');
+
+    const payload = {
+      email: email.trim(),
+      password: password,
+      organizationName: orgName.trim()
+    };
+
+    console.log("SIGNUP_CLICKED", payload);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json();
+      console.log("SIGNUP_RESPONSE", data);
+
+      if (!response.ok) {
+        setError(data.error || 'Registration failed. Please try again.');
+        setIsLoading(false);
+        return;
+      }
+
+      // Store the JWT token
+      if (data.token) {
+        localStorage.setItem('auth-token', data.token);
+      }
+
+      // Transform backend response
+      const user: User = {
+        id: data.user.id,
+        email: data.user.email,
+        password: '',
+        organizationId: data.user.organization_id,
+        roleId: data.user.role_id || 'admin-role',
+        role: data.user.role || 'Admin',
+        status: 'active'
+      };
+
+      const org: Organization = {
+        id: data.user.organization_id,
+        name: orgName.trim(),
+        pricing: { storageFeePerCBM: 0, handlingFeePerCarton: 0 },
+        dateJoined: new Date().toISOString().split('T')[0],
+        billingAddress: '',
+        contactPerson: '',
+        contactEmail: '',
+        contactPhone: '',
+        companyRegNo: '',
+      };
+
+      setIsLoading(false);
+      onAuthSuccess({ user, org });
+
+    } catch (err) {
+      console.error("SIGNUP_ERROR", err);
+      setError('Unable to connect to the server. Please try again later.');
+      setIsLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setForgotMessage('Password reset functionality will be implemented soon. Please contact support.');
   };
 
   const closeForgotModal = () => {
     setIsForgotModalOpen(false);
     setForgotEmail('');
     setForgotMessage('');
-  }
+  };
   
   const inputClass = "block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm";
   const labelClass = "block text-sm font-medium text-gray-700";
@@ -266,8 +246,12 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
           {error && <p className="text-sm text-red-600 bg-red-50 p-3 rounded-md">{error}</p>}
 
           <div>
-            <button type="submit" className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500">
-              {isLoginView ? 'Sign In' : 'Create Organization'}
+            <button 
+              type="submit" 
+              disabled={isLoading}
+              className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isLoading ? 'Please wait...' : (isLoginView ? 'Sign In' : 'Create Organization')}
             </button>
           </div>
         </form>
@@ -291,7 +275,7 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
           </div>
           <form onSubmit={handleForgotPassword}>
             <div className="p-6 space-y-4">
-              <p className="text-sm text-gray-600">Enter your email address. For this demo, a password reset link will be logged to the developer console.</p>
+              <p className="text-sm text-gray-600">Enter your email address to reset your password.</p>
               <div>
                 <label htmlFor="email-forgot" className={labelClass}>Email Address</label>
                 <input type="email" id="email-forgot" value={forgotEmail} onChange={e => setForgotEmail(e.target.value)} className={inputClass} required />
